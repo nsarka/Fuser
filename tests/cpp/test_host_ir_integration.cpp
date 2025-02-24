@@ -113,6 +113,50 @@ TEST_F(HostIrIntegrationTest, Sum) {
       "");
 }
 
+TEST_F(HostIrIntegrationTest, Deallocate) {
+  constexpr int64_t kForLoopStop = 1024;
+  const std::vector<int64_t> sizes = {8, 64};
+  uint8_t device_index = 0;
+
+  c10::cuda::CUDACachingAllocator::resetPeakStats(device_index);
+
+  auto hic = std::make_unique<HostIrContainer>();
+  FusionGuard fg(hic.get());
+
+  auto* for_loop = IrBuilder::create<ForLoop>(
+      /*IterDomain=*/makeContigConcreteTensor({0})->axis(0), // unused
+      /*index=*/IrBuilder::create<Val>(DataType::Index),
+      /*start=*/hic->zeroVal(),
+      /*stop=*/IrBuilder::create<Val>(kForLoopStop, DataType::Index),
+      /*step=*/hic->oneVal(),
+      /*vectorize=*/false,
+      /*vectorize_shift=*/nullptr,
+      /*unroll_required=*/false,
+      CircularBufferLoopStage::NotApplicable,
+      /*circular_buffer_loop_stage_depth=*/0);
+
+  TensorView* tv0 = makeConcreteTensor(sizes);
+  tv0->setMemoryType(MemoryType::Global);
+  auto* allocate = IrBuilder::create<kir::Allocate>(tv0, MemoryType::Global);
+  TensorView* tv1 = abs(tv0);
+
+  for_loop->body().push_back(allocate);
+  for_loop->body().push_back(tv1->definition());
+
+  hic->pushBackTopLevelExprs(for_loop);
+  hic->addOutput(tv1);
+
+  HostIrEvaluator hie(std::move(hic));
+
+  auto outputs = hie.runWithInput({});
+
+  const c10::CachingDeviceAllocator::DeviceStats stats =
+      c10::cuda::CUDACachingAllocator::getDeviceStats(device_index);
+  std::cout << "memory peak: " << stats.allocated_bytes[0].peak << std::endl;
+
+  EXPECT_EQ(sizes, outputs.at(0).sizes());
+}
+
 } // namespace hir
 
 } // namespace nvfuser
