@@ -506,7 +506,7 @@ void FusionKernelRuntime::compileFusionParallel(KernelArgumentHolder args) {
 
   if (isOptionEnabled(EnableOption::HostIrLowering)) {
     hie_ = std::make_unique<hir::HostIrEvaluator>(
-        hir::HostIrEvaluator(std::move(hic)));
+        hir::HostIrEvaluator(std::move(hic), &Communicator::getInstance()));
   }
 
   if (isProfilerEnabled()) {
