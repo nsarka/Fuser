@@ -21,6 +21,8 @@
 #include <scheduler/heuristic.h>
 #include <serde/fusion_cache_generated.h>
 #include <type.h>
+#include <host_ir/lower.h>
+#include <multidevice/communication.h>
 
 #include <c10/cuda/CUDAGuard.h>
 
@@ -446,10 +448,39 @@ void FusionKernelRuntime::compileFusionParallel(KernelArgumentHolder args) {
             std::vector<Val*>{out_clone});
         hic->pushBackTopLevelExprs(launch_kernel);
       } else {
-        // push back segment's exprs into the container as top level expressions
-        for (auto* expr : group_to_run->exprs()) {
-          auto cloned_expr = ir_cloner.clone(expr);
-          hic->pushBackTopLevelExprs(cloned_expr);
+        const bool is_resharding = std::any_of(
+            group_to_run->exprs().begin(), group_to_run->exprs().end(), [](auto expr) {
+              return isResharding(expr);
+            });
+        if (is_resharding) {
+          NVF_ERROR(
+              group_to_run->exprs().size() == 1,
+              "Communication segments must contain only one Expr");
+          HostIrLower lower;
+          for (auto* expr :
+              lower.lower(ir_cloner.clone(group_to_run->exprs().at(0)))) {
+            // Allocate the recv buffers of communications
+            if (expr->isA<Communication>()) {
+              auto* communication = expr->as<Communication>();
+              TensorView* tv = communication->out();
+              if (tv->getDeviceMesh().has(my_device_index)) {
+                auto* allocate =
+                    IrBuilder::create<kir::Allocate>(tv, MemoryType::Global);
+                hic->pushBackTopLevelExprs(allocate);
+              }
+            }
+            hic->pushBackTopLevelExprs(expr);
+            if (expr->isA<Communication>()) {
+              auto wait = IrBuilder::create<hir::Wait>(expr->as<Communication>());
+              hic->pushBackTopLevelExprs(wait);
+            }
+          }
+        } else {
+          // push back segment's exprs into the container as top level expressions
+          for (auto* expr : group_to_run->exprs()) {
+            auto cloned_expr = ir_cloner.clone(expr);
+            hic->pushBackTopLevelExprs(cloned_expr);
+          }
         }
       }
     }
@@ -750,9 +781,8 @@ void FusionKernelRuntime::compileKernel(
 
   if (hic != nullptr) {
     // if it's a kernel executor, compile the segment and append to hic
-    // otherwise, push the segment's exprs directly to the hic
-    if (!HostIrExecutor::supported(fusion_to_run.get()) &&
-        !ExprEvalExecutor::supported(fusion_to_run.get())) {
+    if (heuristic_params->scheduler_type != SchedulerType::Communication &&
+        heuristic_params->scheduler_type != SchedulerType::ExprEval) {
       NVF_ERROR(
           KernelExecutor::supported(fusion_to_run.get()),
           "Fusion not supported by any executor type");

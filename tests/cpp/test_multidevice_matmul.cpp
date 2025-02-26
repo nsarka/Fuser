@@ -184,6 +184,8 @@ TEST_F(DistributedMatmulTest, Matmul_LayoutTN_NoComms) {
 }
 
 TEST_F(DistributedMatmulTest, Matmul_LayoutTN_Allgather) {
+  EnableOptionsGuard opt_guard;
+  EnableOptionsGuard::getCurOptions().set(EnableOption::HostIrLowering);
   // MmaLayout::TN matmul A(T), B(N), C(T)
   // A is sharded on dimension M
   // Tests local matmul + allgather
