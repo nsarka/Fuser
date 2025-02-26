@@ -23,6 +23,7 @@
 #include <type.h>
 #include <host_ir/lower.h>
 #include <multidevice/communication.h>
+#include <multidevice/utils.h>
 
 #include <c10/cuda/CUDAGuard.h>
 
@@ -463,7 +464,7 @@ void FusionKernelRuntime::compileFusionParallel(KernelArgumentHolder args) {
             if (expr->isA<Communication>()) {
               auto* communication = expr->as<Communication>();
               TensorView* tv = communication->out();
-              if (tv->getDeviceMesh().has(my_device_index)) {
+              if (tv->getDeviceMesh().has(Communicator::getInstance().deviceId())) {
                 auto* allocate =
                     IrBuilder::create<kir::Allocate>(tv, MemoryType::Global);
                 hic->pushBackTopLevelExprs(allocate);
