@@ -118,7 +118,9 @@ TEST_F(HostIrIntegrationTest, Deallocate) {
   const std::vector<int64_t> sizes = {8, 64};
   uint8_t device_index = 0;
 
-  c10::cuda::CUDACachingAllocator::resetPeakStats(device_index);
+  resetPeakMemoryStats(device_index);
+
+  std::cout << "memory allocated: " << memoryAllocated(device_index) << std::endl;
 
   auto hic = std::make_unique<HostIrContainer>();
   FusionGuard fg(hic.get());
@@ -150,11 +152,9 @@ TEST_F(HostIrIntegrationTest, Deallocate) {
 
   auto outputs = hie.runWithInput({});
 
-  const c10::CachingDeviceAllocator::DeviceStats stats =
-      c10::cuda::CUDACachingAllocator::getDeviceStats(device_index);
-  std::cout << "memory peak: " << stats.allocated_bytes[0].peak << std::endl;
+  std::cout << "memory peak: " << maxMemoryAllocated(device_index) << std::endl;
 
-  EXPECT_EQ(sizes, outputs.at(0).sizes());
+  EXPECT_EQ(sizes, outputs[0].as<at::Tensor>().sizes());
 }
 
 } // namespace hir
