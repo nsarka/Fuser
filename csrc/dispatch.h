@@ -157,7 +157,8 @@ class Val;
   f(Wait);                            \
   f(Synchronize);                     \
   f(StartCoalescing);                 \
-  f(EndCoalescing);
+  f(EndCoalescing);                   \
+  f(Deallocate);
 
 // Forward declarations for all Val and Expr types
 

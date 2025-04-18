@@ -176,7 +176,7 @@ class Deallocate : public Expr {
   }
 
   const auto allocation() const {
-    return attribute<kir::Allocate*>(0);
+    return attributes_.at(0)->as<kir::Allocate>();
   }
 };
 

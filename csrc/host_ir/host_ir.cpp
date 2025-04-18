@@ -171,7 +171,7 @@ std::string Deallocate::toString(int indent_size) const {
 
 // nick: todo: implement
 std::string Deallocate::toInlineString(int indent_size) const {
-  NVF_CHECK(false, "Can not be printed inline");
+  return std::string("Deallocate");
 }
 
 Stream::Stream(IrBuilderPasskey passkey, Val* index)

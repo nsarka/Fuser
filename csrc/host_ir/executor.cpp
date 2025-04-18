@@ -604,6 +604,12 @@ void HostIrEvaluator::handle(kir::Allocate* allocate) {
   expr_evaluator_.bind(tv, tensor);
 }
 
+void HostIrEvaluator::handle(Deallocate* deallocate) {
+  TensorView* tv = deallocate->allocation()->buffer()->as<TensorView>();
+  NVF_ERROR(expr_evaluator_.isKnown(tv), "Tried to free buffer associated with unknown TensorView", tv);
+  expr_evaluator_.invalidate(tv);
+}
+
 void HostIrEvaluator::unhandled(Statement* stmt) {
   NVF_ERROR(stmt->isA<Expr>(), stmt, " must be an Expr");
   auto* expr = stmt->as<Expr>();
