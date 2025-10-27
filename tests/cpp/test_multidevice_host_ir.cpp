@@ -439,6 +439,120 @@ TEST_F(MultiDeviceTest, ShareIpcMemHandles) {
   }
 }
 
+TEST_F(MultiDeviceTest, LoadStoreIpcMemHandles) {
+  static constexpr int kTensorSize = 4;
+  static constexpr int kNumRepetitions = 10;
+
+  if (communicator_->size() < 2 || at::cuda::device_count() < 2) {
+    GTEST_SKIP() << "This test needs at least 2 GPUs and 2 ranks.";
+  }
+
+  const DeviceIdxType my_rank = communicator_->deviceId();
+  const int64_t size = communicator_->size();
+  const DeviceIdxType send_peer = (my_rank + 1) % size;
+  const DeviceIdxType recv_peer = (size + my_rank - 1) % size;
+
+  auto container = std::make_unique<hir::HostIrContainer>();
+  FusionGuard fg(container.get());
+
+  auto* send_tv = makeContigTensor(1, DataType::Int32);
+  auto* recv_tv = makeContigTensor(1, DataType::Int32);
+
+  auto send = IrBuilder::create<P2PCommunication>(
+      P2PCommunicationType::SEND,
+      send_tv,
+      IrBuilder::create<Val>(send_peer),
+      CommunicatorBackend::kNccl);
+  auto recv = IrBuilder::create<P2PCommunication>(
+      P2PCommunicationType::RECV,
+      recv_tv,
+      IrBuilder::create<Val>(recv_peer),
+      CommunicatorBackend::kNccl);
+  std::vector<P2PCommunication*> grouped_communications = {send, recv};
+
+  ExpressionEvaluator expr_evaluator;
+  IpcHandleCache ipc_handle_cache(expr_evaluator);
+
+  auto options =
+      at::TensorOptions().dtype(at::kInt).device(communicator_->device());
+  auto generate_tensor = [options](int repetition, int rank) {
+    return at::arange(kTensorSize, options) + (repetition + 1) * 10 +
+        100 * rank;
+  };
+  at::Tensor recv_tensor = at::empty({kTensorSize}, options);
+  at::Tensor send_tensor = at::empty({kTensorSize}, options);
+
+  expr_evaluator.bind(send_tv, send_tensor);
+  expr_evaluator.bind(recv_tv, recv_tensor);
+
+  for (auto repetition : c10::irange(kNumRepetitions)) {
+    // all ranks set `send_tensor`
+    send_tensor.copy_(generate_tensor(repetition, my_rank));
+
+    // Exchange IpcHandle on the first iteration
+    ipc_handle_cache.exchangeHandles(grouped_communications);
+
+    // RDMA put-zcopy
+    const P2pIpcHandle& send_ipc_handles = ipc_handle_cache.get(send);
+    //NVFUSER_CUDA_RT_SAFE_CALL(cudaMemcpy(
+    //    send_ipc_handles.peer().ptr(), // dst
+    //    send_ipc_handles.local().ptr(), // src
+    //    send_tensor.numel() * send_tensor.element_size(),
+    //    cudaMemcpyDeviceToDevice));
+
+    auto peer_tensor = torch::from_blob(send_ipc_handles.peer().ptr(), {kTensorSize}, torch::TensorOptions().device(torch::kCUDA).dtype(torch::kInt32));
+
+    // Instead of cudaMemcpy, generate a kernel and pass the ipc handles as inputs and outputs
+    {
+      auto fusion = std::make_unique<Fusion>();
+      FusionGuard fg(fusion.get());
+      auto* input_tv = makeContigTensor(1, DataType::Int32);
+      //auto* output_tv = makeContigTensor(1, DataType::Int32);
+
+      fusion->addInput(input_tv);
+      //fusion->addOutput(output_tv);
+      //fusion->addInput(output_tv);
+
+      // Is it possible for a TV to be both and output and input? This LoadStoreOp
+      // doesnt get added if i uncomment the previous line
+      //IrBuilder::create<LoadStoreOp>(LoadStoreOpType::Set, output_tv, input_tv);
+      auto* set_tv = set(input_tv);
+      fusion->addOutput(set_tv);
+      fusion->printMath();
+
+      KernelExecutor ke;
+      std::cout << "compiling..." << std::endl;
+      ke.compile(fusion.get(), {recv_tensor});
+      //communicator_->barrier();
+      std::cout << "done compiling, running..." << std::endl;
+      auto outputs = ke.run({peer_tensor});
+      std::cout << "done running... copying" << std::endl;
+      recv_tensor.copy_(outputs[0].as<at::Tensor>());
+      std::cout << "done copying" << std::endl;
+    }
+    FusionGuard fg(container.get()); // i dont know if getting the original FusionGuard is necessary
+
+    std::cout << "synchronizing..." << std::endl;
+    torch::cuda::synchronize();
+    std::cout << "done synchronizing, barrier(ing)..." << std::endl;
+    communicator_->barrier();
+    std::cout << "done barrier(ing), checking..." << std::endl;
+    at::Tensor ref_recv_tensor = generate_tensor(repetition, recv_peer);
+    EXPECT_TRUE(at::allclose(recv_tensor, ref_recv_tensor))
+        << "Rank " << my_rank << " failed at repetition " << repetition
+        << " with recv tensor " << recv_tensor << " and ref_recv_tensor "
+        << ref_recv_tensor;
+    std::cout << "done checking... synchronizing again..." << std::endl;
+    // Prevent recv_peer from writing the next iteration's data before
+    // we finish verifying this iteration's data
+    cudaDeviceSynchronize();
+    std::cout << "done synchronizing again, barrier again..." << std::endl;
+    communicator_->barrier();
+    std::cout << "done barrier again, done with iter " << repetition << std::endl;
+  }
+  std::cout << "done with test" << std::endl;
+}
+
 } // namespace hir
 
 } // namespace nvfuser
