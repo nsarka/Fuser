@@ -38,6 +38,7 @@ bool HostIrLower::isLowerableAsStandaloneHostOp(Expr* expr) {
           BinaryOp,
           ReductionOp,
           Communication,
+          ReshapeOp,
           P2PCommunication>()) {
     return true;
   }

@@ -315,6 +315,13 @@ void HostIrEvaluator::handle(ShareMemHandles* share_mem_handles) {
   ipc_handle_cache_.exchangeHandles(share_mem_handles->communications());
 }
 
+void HostIrEvaluator::handle(ReshapeOp* reshape_op) {
+  at::Tensor input_tensor = getKnownConcreteValue(reshape_op->in()).as<at::Tensor>();
+  auto output_shape = expr_evaluator_.evaluate(reshape_op->out()).as<at::Tensor>().sizes();
+  at::Tensor output_tensor = input_tensor.reshape(output_shape);
+  expr_evaluator_.bind(reshape_op->out(), output_tensor);
+}
+
 void HostIrEvaluator::handle(Communication* communication) {
   NVF_ERROR(
       communicator_ != nullptr && communicator_->is_available(),
